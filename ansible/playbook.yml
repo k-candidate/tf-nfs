@@ -1,0 +1,68 @@
+---
+- name: Enable, start and configure the NFS server
+  hosts: all
+  become: true
+  vars:
+    shares: "{{ shares }}"
+    nfs_networks: "{{ nfs_networks }}"
+    nfs_options: "{{ nfs_options }}"
+    export_dir_permissions : "{{ export_dir_permissions }}"
+  tasks:
+    - name: Show Ansible version. For troubleshooting
+      debug:
+        msg: "Ansible version is  {{ ansible_version.full }}"
+
+    - name: Check if this playbook has rebooted the machine before
+      ansible.builtin.stat:
+        path: /var/tmp/ansible_rebooted_this_machine_before.txt
+      register: reboot_file
+
+    - name: Reboot on the playbook's first run to start fresh after the changes made by user data
+      ansible.builtin.reboot:
+        post_reboot_delay: 10
+        connect_timeout: 120
+      when: not reboot_file.stat.exists
+      register: reboot_result
+
+    - name: Create file to indicate reboot happened on the playbook's first run
+      ansible.builtin.file:
+        path: /var/tmp/ansible_rebooted_this_machine_before.txt
+        state: touch
+      when:
+        - reboot_file.stat.exists == false
+        - reboot_result is succeeded
+
+    - name: Create exports parent directory
+      ansible.builtin.file:
+        path: /exports
+        state: directory
+
+    - name: Create exports directories
+      ansible.builtin.file:
+        path: "/exports/{{ item }}"
+        state: directory
+        mode: "{{ export_dir_permissions[ndx] }}"
+      loop: "{{ shares }}"
+      loop_control:
+        index_var: ndx
+
+    - name: Make sure exports config exists
+      ansible.builtin.wait_for:
+        path: "/etc/exports"
+        state: present
+        timeout: 120
+
+    - name: Edit exports config
+      ansible.builtin.lineinfile:
+        path: "/etc/exports"
+        line: "/exports/{{ item }} {{ nfs_networks[idx] }}{{ nfs_options[idx] }}"
+        regexp: '^/exports/{{ item }}.*'
+      loop: "{{ shares }}"
+      loop_control:
+        index_var: idx
+
+    - name: Restart nfs service and make sure it is enabled
+      ansible.builtin.systemd:
+        name: nfs-kernel-server
+        state: restarted
+        enabled: true
